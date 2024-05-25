@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     email: Optional[str] = None
 
     min_length_password: int = 3
+    date_format: str = "%Y/%m/%d %H:%M:%S"
 
     class Config:
         env_file = '../../.env'
