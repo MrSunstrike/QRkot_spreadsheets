@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.validators import (check_full_amount_ge_invested_amount,
@@ -40,10 +41,15 @@ async def create_new_charity_project(
     new_name = json_in.name
     await check_project_name_is_unique(new_name, session)
 
-    new_project = await charity_project_crud.create(json_in, session)
-    await project_workflow(new_project, session)
+    try:
+        new_project = await charity_project_crud.create(json_in, session)
+        await project_workflow(new_project, session)
 
-    return new_project
+    except IntegrityError:
+        await session.rollback()
+
+    else:
+        return new_project
 
 
 @router.delete(
