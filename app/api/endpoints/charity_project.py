@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Depends
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.validators import (check_full_amount_ge_invested_amount,
@@ -10,7 +9,7 @@ from app.core.db import get_async_session
 from app.core.user import current_superuser
 from app.crud.charity_project import charity_project_crud
 from app.schemas.charity_project import ProjectCreate, ProjectDB, ProjectUpdate
-from app.services.investment_processor import project_workflow
+from app.services.investment_processor import project_investing
 
 router = APIRouter()
 
@@ -18,9 +17,10 @@ router = APIRouter()
 @router.get('/', response_model=list[ProjectDB])
 async def get_all_projects(
     session: AsyncSession = Depends(get_async_session),
-):
-    """Возвращает список всех проектов."""
-
+) -> list[ProjectDB]:
+    """
+    Возвращает список всех проектов.
+    """
     projects = await charity_project_crud.get_multi(session)
 
     return projects
@@ -32,24 +32,33 @@ async def get_all_projects(
     dependencies=[Depends(current_superuser)],
 )
 async def create_new_charity_project(
-    json_in: ProjectCreate,
+    data: ProjectCreate,
     session: AsyncSession = Depends(get_async_session),
-):
-    """Только для суперюзеров.
-    Создаёт благотворительный проект."""
-
-    new_name = json_in.name
+) -> ProjectDB:
+    """
+    Только для суперюзеров. Создаёт благотворительный проект.
+    """
+    new_name = data.name
     await check_project_name_is_unique(new_name, session)
 
-    try:
-        new_project = await charity_project_crud.create(json_in, session)
-        await project_workflow(new_project, session)
+    new_project = await charity_project_crud.create(
+        obj_in=data,
+        session=session,
+        commit=False
+    )
 
-    except IntegrityError:
-        await session.rollback()
+    donations = await project_investing(
+        session=session,
+        project=new_project
+    )
 
-    else:
-        return new_project
+    session.add(new_project)
+    session.add_all(donations)
+
+    await session.commit()
+    await session.refresh(new_project)
+
+    return new_project
 
 
 @router.delete(
@@ -60,13 +69,14 @@ async def create_new_charity_project(
 async def delete_project(
     project_id: int,
     session: AsyncSession = Depends(get_async_session),
-):
-    """Только для суперюзеров.
-    Удаляет проект. Нельзя удалить проект, в который уже были инвестированы
-    средства, его можно только закрыть."""
-
+) -> ProjectDB:
+    """
+    Только для суперюзеров. Удаляет проект. Нельзя удалить проект, в который
+    уже были инвестированы средства, его можно только закрыть.
+    """
     project = await check_project_exists(project_id, session)
     check_project_does_not_have_investors(project)
+
     removed_project = await charity_project_crud.remove(project, session)
 
     return removed_project
@@ -79,27 +89,27 @@ async def delete_project(
 )
 async def update_project(
     project_id: int,
-    json_in: ProjectUpdate,
+    data: ProjectUpdate,
     session: AsyncSession = Depends(get_async_session),
-):
-    """Только для суперюзеров.
-    Закрытый проект нельзя редактировать; нельзя установить требуемую сумму
-    меньше уже вложенной."""
-
+) -> ProjectDB:
+    """
+    Только для суперюзеров. Закрытый проект нельзя редактировать; нельзя
+    установить требуемую сумму меньше уже вложенной.
+    """
     project_to_update = await check_project_exists(project_id, session)
     check_project_is_closed(project_to_update)
 
-    if json_in.name:
-        new_name = json_in.name
+    if data.name:
+        new_name = data.name
         await check_project_name_is_unique(new_name, session)
 
-    if json_in.full_amount is not None:
-        new_amount = json_in.full_amount
+    if data.full_amount is not None:
+        new_amount = data.full_amount
         check_full_amount_ge_invested_amount(project_to_update, new_amount)
 
     updated_project = await charity_project_crud.update(
         project_to_update,
-        json_in,
+        data,
         session,
     )
 

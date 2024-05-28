@@ -1,85 +1,72 @@
 from datetime import datetime
-from typing import Union
+from typing import List, Union
 
-from fastapi import Depends
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db import get_async_session
-from app.models import CharityProject, Donation
+from app.crud.charity_project import charity_project_crud
+from app.crud.donation import donation_crud
+from app.schemas.charity_project import ProjectDB
+from app.schemas.donation import DonationProcessorDB
 
 
-async def find_project_for_investment(
-        session: AsyncSession = Depends(get_async_session)
-):
-    project_for_investment = await session.execute(
-        select(CharityProject).where(
-            CharityProject.fully_invested == 0
-        )
-    )
-    return project_for_investment.scalars().all()
-
-
-async def find_donation_to_invest(
-        session: AsyncSession = Depends(get_async_session)
-):
-    donation_to_invest = await session.execute(
-        select(Donation).where(
-            Donation.fully_invested == 0
-        )
-    )
-    return donation_to_invest.scalars().all()
-
-
-async def close_fully_invested_object(obj: Union[CharityProject, Donation]):
-    obj.invested_amount = obj.full_amount
+async def fully_invested(obj: Union[ProjectDB, DonationProcessorDB]) -> None:
     obj.fully_invested = True
+    obj.invested_amount = obj.full_amount
     obj.close_date = datetime.now()
 
 
-async def processor(project: CharityProject, donation: Donation):
-    investment_balance = project.full_amount - project.invested_amount
-    donation_balance = donation.full_amount - donation.invested_amount
-    if investment_balance > donation_balance:
-        project.invested_amount += donation_balance
-        await close_fully_invested_object(donation)
-    if donation_balance > investment_balance:
-        donation.invested_amount += investment_balance
-        await close_fully_invested_object(project)
-    if investment_balance == donation_balance:
-        await close_fully_invested_object(project)
-        await close_fully_invested_object(donation)
-    return project, donation
+async def processor(donation: DonationProcessorDB, project: ProjectDB) -> bool:
+    if donation.fully_invested or project.fully_invested:
+        return True
+
+    donation_to_distribute = donation.full_amount - (
+        donation.invested_amount or 0
+    )
+
+    project_to_close = project.full_amount - (
+        project.invested_amount or 0
+    )
+
+    if project_to_close < donation_to_distribute:
+        donation.invested_amount += project_to_close
+        await fully_invested(project)
+
+    elif project_to_close > donation_to_distribute:
+        project.invested_amount += donation_to_distribute
+        await fully_invested(donation)
+
+    else:
+        await fully_invested(project)
+        await fully_invested(donation)
 
 
-async def project_workflow(
-        project: CharityProject,
-        session: AsyncSession = Depends(get_async_session)
-):
-    donations_coroutine = await find_donation_to_invest(session)
+async def donation_investing(
+    session: AsyncSession,
+    donation: DonationProcessorDB
+) -> List[ProjectDB]:
+    projects = await charity_project_crud.get_items_to_process(session)
+    result = list()
 
-    for donation in donations_coroutine:
-        await processor(project, donation)
-        session.add(project)
-        session.add(donation)
+    for project in projects:
+        if await processor(donation=donation, project=project):
+            break
 
-    await session.commit()
-    await session.refresh(project)
+        result.append(project)
 
-    return project
+    return result
 
 
-async def donation_workflow(
-        donation: Donation, session: AsyncSession = Depends(get_async_session)
-):
-    projects_coroutine = await find_project_for_investment(session)
+async def project_investing(
+    session: AsyncSession,
+    project: ProjectDB
+) -> List[DonationProcessorDB]:
+    donations = await donation_crud.get_items_to_process(session=session)
+    result = list()
 
-    for project in projects_coroutine:
-        await processor(project, donation)
-        session.add(project)
-        session.add(donation)
+    for donation in donations:
+        if await processor(donation=donation, project=project):
+            break
 
-    await session.commit()
-    await session.refresh(donation)
+        result.append(donation)
 
-    return donation
+    return result

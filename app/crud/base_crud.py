@@ -38,6 +38,7 @@ class CRUDBase:
             obj_in,
             session: AsyncSession,
             user: Optional[User] = None,
+            commit: bool = True,
     ):
         obj_in_data = obj_in.dict()
 
@@ -46,8 +47,10 @@ class CRUDBase:
 
         db_obj = self.model(**obj_in_data)
         session.add(db_obj)
-        await session.commit()
-        await session.refresh(db_obj)
+
+        if commit:
+            await session.commit()
+            await session.refresh(db_obj)
 
         return db_obj
 
@@ -82,3 +85,12 @@ class CRUDBase:
         await session.commit()
 
         return db_obj
+
+    async def get_items_to_process(self, session: AsyncSession):
+        items = await session.execute(
+            select(self.model)
+            .where(self.model.fully_invested.is_(False))
+            .order_by(self.model.create_date)
+        )
+
+        return items.scalars().all()
