@@ -1,9 +1,10 @@
-from datetime import datetime
 import copy
+from datetime import datetime
+
 from aiogoogle import Aiogoogle
-from app.models.charity_project import CharityProject
 
 from app.core.config import settings
+from app.models.charity_project import CharityProject
 
 SPREADSHEET_BODY = {
     "properties": {

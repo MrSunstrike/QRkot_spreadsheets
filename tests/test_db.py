@@ -1,6 +1,5 @@
 from conftest import BASE_DIR
 
-
 try:
     from app.core.config import Settings
 except (NameError, ImportError) as error:
